@@ -6,14 +6,14 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract SimpleToken is ERC20, Ownable {
     constructor() ERC20("SimpleToken", "STK") Ownable(msg.sender) {
-          _mint(msg.sender, 1000 * 10 ** decimals());
-      }
+        _mint(msg.sender, 1000 * 10 ** decimals());
+    }
 
     function mint(address to, uint256 amount) external onlyOwner {
-          _mint(to, amount);
-      }
+        _mint(to, amount);
+    }
 
     function burnFrom(address from, uint256 amount) external onlyOwner {
-          _burn(from, amount);
-      }
+        _burn(from, amount);
+    }
 }

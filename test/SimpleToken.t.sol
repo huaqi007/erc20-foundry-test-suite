@@ -21,6 +21,7 @@ contract SimpleTokenTest is Test {
         // owner now has 1000 STK
     }
 
+    // 测试更新合并改动
     // ═══════════════════════════════════════════
     // 维度 1：功能测试 — 正常路径 (1–5)
     // ═══════════════════════════════════════════
@@ -272,10 +273,7 @@ contract SimpleTokenTest is Test {
         token.mint(bob, 200 * 1e18);
         token.mint(charlie, 100 * 1e18);
 
-        uint256 sum = token.balanceOf(owner)
-            + token.balanceOf(alice)
-            + token.balanceOf(bob)
-            + token.balanceOf(charlie);
+        uint256 sum = token.balanceOf(owner) + token.balanceOf(alice) + token.balanceOf(bob) + token.balanceOf(charlie);
 
         assertEq(sum, token.totalSupply(), "sum of balances = totalSupply");
     }
