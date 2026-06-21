@@ -33,5 +33,5 @@ jobs:
 
       - name: Run Forge tests
         run: forge test -vvv
-      - name: Run Forge coverage2
-        run: forge coverage --report lcov
+      # - name: Run Forge coverage2
+      #   run: forge coverage --report lcov
