@@ -369,4 +369,65 @@ contract SimpleTokenTest is Test {
         vm.expectRevert();
         token.transferFrom(address(0), charlie, 100 * 1e18);
     }
+
+    // ═══════════════════════════════════════════
+    // Fuzz 测试（Forge 自动随机参数）
+    // ═══════════════════════════════════════════
+
+    /// @dev Fuzz: 任意金额的 transfer 后，发送者+接收者余额之和不变
+    function testFuzz_TransferBalanceSumInvariant(uint256 amount) public {
+        // 限制 amount 不超过 owner 余额，否则会 revert
+        amount = bound(amount, 0, INITIAL_SUPPLY);
+
+        uint256 balanceBefore = token.balanceOf(owner) + token.balanceOf(alice);
+
+        vm.prank(owner);
+        token.transfer(alice, amount);
+
+        uint256 balanceAfter = token.balanceOf(owner) + token.balanceOf(alice);
+        assertEq(balanceAfter, balanceBefore, "sum of balances should be invariant");
+    }
+
+    /// @dev Fuzz: 任意金额的 approve 后，余额不变
+    function testFuzz_ApproveDoesNotChangeBalance(uint256 approveAmount) public {
+        uint256 balanceBefore = token.balanceOf(owner);
+
+        vm.prank(owner);
+        token.approve(alice, approveAmount);
+
+        assertEq(token.balanceOf(owner), balanceBefore, "approve never changes balance");
+    }
+
+    /// @dev Fuzz: 任意金额的 mint + burn 后，totalSupply 正确
+    function testFuzz_MintThenBurnTotalSupply(uint256 mintAmount, uint256 burnAmount) public {
+        mintAmount = bound(mintAmount, 1, 1_000_000 * 1e18);
+        burnAmount = bound(burnAmount, 0, mintAmount);
+
+        uint256 supplyBefore = token.totalSupply();
+
+        token.mint(alice, mintAmount);
+        uint256 supplyAfterMint = token.totalSupply();
+
+        token.burnFrom(alice, burnAmount);
+        uint256 supplyAfterBurn = token.totalSupply();
+
+        assertEq(supplyAfterMint, supplyBefore + mintAmount, "mint adds to supply");
+        assertEq(supplyAfterBurn, supplyAfterMint - burnAmount, "burn subtracts from supply");
+    }
+
+    /// @dev Fuzz: 任意合法金额的 transferFrom 后，allowance 正确扣减
+    function testFuzz_TransferFromAllowance(uint256 approveAmount, uint256 transferAmount) public {
+        approveAmount = bound(approveAmount, 1, 1_000_000 * 1e18);
+        transferAmount = bound(transferAmount, 0, approveAmount);
+
+        token.mint(alice, approveAmount);
+
+        vm.prank(alice);
+        token.approve(bob, approveAmount);
+
+        vm.prank(bob);
+        token.transferFrom(alice, charlie, transferAmount);
+
+        assertEq(token.allowance(alice, bob), approveAmount - transferAmount, "allowance after transferFrom");
+    }
 }

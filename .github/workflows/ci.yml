@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
@@ -21,4 +21,4 @@ jobs:
         run: forge test -vvv
 
       - name: Check Gas Snapshot
-        run: forge snapshot --diff --check
+        run: forge snapshot --check
