@@ -369,6 +369,7 @@ contract SimpleTokenTest is Test {
         vm.expectRevert();
         token.transferFrom(address(0), charlie, 100 * 1e18);
     }
+
     // ═══════════════════════════════════════════
     // Fuzz 测试（Forge 自动随机参数）
     // ═══════════════════════════════════════════
@@ -415,10 +416,7 @@ contract SimpleTokenTest is Test {
     }
 
     /// @dev Fuzz: 任意合法金额的 transferFrom 后，allowance 正确扣减
-    function testFuzz_TransferFromAllowance(
-        uint256 approveAmount,
-        uint256 transferAmount
-    ) public {
+    function testFuzz_TransferFromAllowance(uint256 approveAmount, uint256 transferAmount) public {
         approveAmount = bound(approveAmount, 1, 1_000_000 * 1e18);
         transferAmount = bound(transferAmount, 0, approveAmount);
 
@@ -430,10 +428,6 @@ contract SimpleTokenTest is Test {
         vm.prank(bob);
         token.transferFrom(alice, charlie, transferAmount);
 
-        assertEq(
-            token.allowance(alice, bob),
-            approveAmount - transferAmount,
-            "allowance after transferFrom"
-        );
+        assertEq(token.allowance(alice, bob), approveAmount - transferAmount, "allowance after transferFrom");
     }
 }

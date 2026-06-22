@@ -17,24 +17,12 @@ contract SimplePool is ReentrancyGuard {
     uint256 public constant BASIS_POINTS = 10000;
 
     event Swap(
-        address indexed user,
-        address indexed tokenIn,
-        uint256 amountIn,
-        address indexed tokenOut,
-        uint256 amountOut
+        address indexed user, address indexed tokenIn, uint256 amountIn, address indexed tokenOut, uint256 amountOut
     );
 
-    event LiquidityAdded(
-        address indexed provider,
-        uint256 amountA,
-        uint256 amountB
-    );
+    event LiquidityAdded(address indexed provider, uint256 amountA, uint256 amountB);
 
-    event LiquidityRemoved(
-        address indexed provider,
-        uint256 amountA,
-        uint256 amountB
-    );
+    event LiquidityRemoved(address indexed provider, uint256 amountA, uint256 amountB);
 
     constructor(address _tokenA, address _tokenB) {
         require(_tokenA != address(0) && _tokenB != address(0), "Invalid token");
@@ -48,21 +36,16 @@ contract SimplePool is ReentrancyGuard {
     /// @param _amountIn 输入数量
     /// @param _amountOutMin 最小输出（滑点保护）
     /// @return amountOut 实际输出数量
-    function swap(
-        address _tokenIn,
-        uint256 _amountIn,
-        uint256 _amountOutMin
-    ) external nonReentrant returns (uint256 amountOut) {
+    function swap(address _tokenIn, uint256 _amountIn, uint256 _amountOutMin)
+        external
+        nonReentrant
+        returns (uint256 amountOut)
+    {
         require(_amountIn > 0, "AmountIn must be > 0");
-        require(
-            _tokenIn == address(tokenA) || _tokenIn == address(tokenB),
-            "Invalid token"
-        );
+        require(_tokenIn == address(tokenA) || _tokenIn == address(tokenB), "Invalid token");
 
         (IERC20 tokenIn, IERC20 tokenOut, uint256 reserveIn, uint256 reserveOut) =
-            _tokenIn == address(tokenA)
-                ? (tokenA, tokenB, reserveA, reserveB)
-                : (tokenB, tokenA, reserveB, reserveA);
+            _tokenIn == address(tokenA) ? (tokenA, tokenB, reserveA, reserveB) : (tokenB, tokenA, reserveB, reserveA);
 
         require(reserveIn > 0 && reserveOut > 0, "Empty pool");
 
@@ -119,16 +102,11 @@ contract SimplePool is ReentrancyGuard {
     }
 
     /// @notice 查询兑换输出量（不执行交易）
-    function getAmountOut(address _tokenIn, uint256 _amountIn)
-        external
-        view
-        returns (uint256)
-    {
+    function getAmountOut(address _tokenIn, uint256 _amountIn) external view returns (uint256) {
         if (_amountIn == 0) return 0;
 
-        (uint256 reserveIn, uint256 reserveOut) = _tokenIn == address(tokenA)
-            ? (reserveA, reserveB)
-            : (reserveB, reserveA);
+        (uint256 reserveIn, uint256 reserveOut) =
+            _tokenIn == address(tokenA) ? (reserveA, reserveB) : (reserveB, reserveA);
 
         if (reserveIn == 0 || reserveOut == 0) return 0;
 
