@@ -216,6 +216,50 @@ function setFee(uint256 _newFee) external onlyOwner {
 
 ---
 
+## Anti-Patterns: What Does NOT Count as a Fix (NEVER DO)
+
+These are **NOT fixes** — they are evasions that leave the vulnerability intact:
+
+| Anti-Pattern | Example | Why It's Wrong |
+|-------------|---------|----------------|
+| **Comment-only "fix"** | `/// @dev ⚠️ Warning: don't use this as oracle` | Attacker doesn't read comments. Code is still exploitable. |
+| **NatSpec "mitigation"** | `/// @notice 禁止用于清算定价` | Downstream protocols may ignore or miss the warning. |
+| **Documentation in lieu of code** | Adding a README caveat instead of fixing the logic | Documentation is not enforced at runtime. |
+| **Relying on caller behavior** | "Users should set `amountOutMin > 0`" | Contract must enforce, not hope. MEV bots ignore docs. |
+| **console.log / event only** | Emitting an event on reentrancy attempt but still executing | Detection without prevention is useless. |
+
+**Golden rule**: If the PoC test still passes after your "fix", it's not a fix. Every fix must make at least one previously-passing PoC test **revert**.
+
+**Real example — Spot Price Oracle (V-03)**:
+
+```solidity
+// ❌ ANTI-PATTERN: Comment-only — PoC still passes, attacker still manipulates price
+/// @dev ⚠️ 安全警告：此函数返回瞬时现货价格，请勿用于清算
+function getPrice(address _tokenIn) external view returns (uint256) {
+    return reserveA > 0 ? (reserveB * 1e18) / reserveA : 0;  // ← still spot price!
+}
+
+// ✅ REAL FIX: Implement TWAP oracle — PoC now reverts / attack economically infeasible
+uint256 public priceACumulativeLast;
+uint32 public blockTimestampLast;
+
+function _updateOracle() private {
+    uint32 elapsed = uint32(block.timestamp % 2**32) - blockTimestampLast;
+    if (elapsed > 0 && reserveA > 0) {
+        priceACumulativeLast += (reserveB * 1e18 / reserveA) * elapsed;
+    }
+}
+
+function getTwapA(uint32 period) external view returns (uint256 twap) {
+    // ΔcumPrice / Δtime = true time-weighted average
+    Observation memory cur = _observations[_obsIndex];
+    Observation memory prev = _observations[1 - _obsIndex];
+    twap = (cur.cumA - prev.cumA) / uint256(cur.timestamp - prev.timestamp);
+}
+```
+
+---
+
 ## Complete Fix Example
 
 **Vulnerability**: `swap()` transfers tokens before updating reserves — reentrancy via token callback + no deadline.
