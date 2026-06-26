@@ -13,7 +13,7 @@
 |----|--------|------|----------|:--:|
 | V-01 | Critical | Fee-on-Transfer 代币导致 insolvency | 余额快照法（实际到账） | ✅ |
 | V-02 | Critical | swap→addLiquidity 跨函数重入 | `nonReentrant` 全覆盖 | ✅ |
-| V-03 | Critical | Spot Price Oracle 操纵 | NatSpec 安全警告 + 文档 | ✅ |
+| V-03 | Critical | Spot Price Oracle 操纵 | Uniswap V2 风格 TWAP oracle | ✅ |
 | V-04 | High | USDT transfer 返回值未检查 | SafeERC20 (safeTransfer/safeTransferFrom) | ✅ |
 | V-05 | High | Rebasing Token 余额膨胀 | 余额快照法（同 V-01） | ✅ |
 | V-06 | High | 三明治 MEV 攻击 | `deadline` 参数 | ✅ |
@@ -99,23 +99,79 @@ test_Fix_V02_RemoveLiquidity_NonReentrant() // ERC777 回调中 removeLiquidity 
 ## V-03 [Critical] Spot Price Oracle 可操纵
 
 ### 根因
-`getPrice()` 返回瞬时 spot price，单笔大额交易可大幅操纵。
+`getPrice()` 返回瞬时 spot price，单笔大额交易可大幅操纵（闪电贷可在 1 个交易内完成）。
 
 ### 修复
-在 `getPrice()` 上添加 **NatSpec 安全警告**，禁止下游协议将此价格用于清算/借贷/衍生品：
+实现 **Uniswap V2 风格 TWAP（Time-Weighted Average Price）oracle**：
+
+1. **累积价格追踪** (`priceACumulativeLast`, `priceBCumulativeLast`)：每笔状态变更交易前，累加 `当前价格 × 时间间隔`
+2. **双槽环形缓冲区** (`Observation[2]`)：存储两个历史快照，供链上 TWAP 查询
+3. **`getTwapA(_period)` / `getTwapB(_period)`**：从缓冲区取最近两个快照，计算 `ΔcumPrice / Δtime`
+4. **`getOracleState()`**：返回完整 oracle 状态，供外部集成方自行快照 + 计算任意窗口 TWAP
+5. **`_updateOracle()`**：在 swap / addLiquidity / removeLiquidity 的 reserve 变更前自动调用
+
 ```solidity
-/// @dev ⚠️ 安全警告：此函数返回瞬时现货价格，极易被闪电贷/大额交易操纵。
-///      禁止将此价格作为清算、借贷、衍生品结算等关键业务的 oracle。
-///      如需可信价格，请集成 TWAP（时间加权平均价格）或 Chainlink oracle。
+// 累积价格更新（每次状态变更前调用）
+function _updateOracle() private {
+    uint32 blockTimestamp = uint32(block.timestamp % 2 ** 32);
+    uint32 timeElapsed = blockTimestamp - blockTimestampLast;
+
+    if (timeElapsed > 0 && reserveA > 0 && reserveB > 0) {
+        // 累积价格 += 当前瞬时价格 × 经过秒数
+        priceACumulativeLast += (reserveB * 1e18 / reserveA) * timeElapsed;
+        priceBCumulativeLast += (reserveA * 1e18 / reserveB) * timeElapsed;
+
+        // 写入环形缓冲区
+        Observation memory lastObs = _observations[_obsIndex];
+        if (blockTimestamp > lastObs.timestamp) {
+            _obsIndex = 1 - _obsIndex;
+            _observations[_obsIndex] = Observation(blockTimestamp,
+                priceACumulativeLast, priceBCumulativeLast);
+        }
+        blockTimestampLast = blockTimestamp;
+    }
+}
+
+// TWAP 查询
+function getTwapA(uint32 _period) external view returns (uint256 twap) {
+    Observation memory current = _observations[_obsIndex];
+    Observation memory previous = _observations[1 - _obsIndex];
+    uint32 window = current.timestamp - previous.timestamp;
+    if (window < _period) return 0;
+    twap = (current.cumA - previous.cumA) / uint256(window);
+}
 ```
+
+### 外部集成方使用方式
+
+**链上**：直接调用 `getTwapA(1800)` 获取 30 分钟 TWAP。
+
+**链下（推荐）**：
+```
+1. T1: getOracleState() → 记录 (cumA, cumB, ts)
+2. 等待 ≥ period 秒
+3. T2: getOracleState() → 记录 (cumA', cumB', ts')
+4. TWAP_A = (cumA' - cumA) / (ts' - ts)
+```
+
+### 安全分析
+
+| 攻击类型 | Spot Price | TWAP (600s 窗口) |
+|----------|:----------:|:-----------------:|
+| 闪电贷（1 tx） | ❌ 可偏离 >90% | ✅ 几乎不受影响 |
+| 多区块操纵（5 min） | ❌ 可大幅偏离 | ⚠️ 部分影响（需更长窗口） |
+| 持续操纵（30 min+） | ❌ 完全可控 | ⚠️ 成本极高但不为零 |
 
 ### 回归测试
 ```solidity
-test_Fix_V03_GetPrice_StillWorks()          // getPrice 基本功能正常
-test_Fix_V03_GetPrice_ManipulableByLargeSwap() // 验证 spot price 可被大额交易操纵
+test_Fix_V03_TWAP_CumulativePriceUpdated()   // swap 后累积价格递增
+test_Fix_V03_TWAP_GetTwapA_ReturnsTWAP()     // getTwapA 返回有效 TWAP
+test_Fix_V03_TWAP_MoreStableThanSpot()       // TWAP 比 spot price 更抗操纵
+test_Fix_V03_TWAP_ReturnsZeroWhenInsufficientHistory() // 历史不足返回 0
+test_Fix_V03_GetOracleState()                // getOracleState 完整状态
+test_Fix_V03_GetPrice_StillWorks()           // spot price 向后兼容
+test_Fix_V03_SpotPrice_Manipulable()         // 证明 spot price 可操纵（TWAP 必要性）
 ```
-
-> **注意**: 完整的 TWAP 实现需引入 cumulative price 追踪 + 时间窗口，超出本次修复范围。
 
 ---
 
@@ -261,23 +317,28 @@ test_Fix_V07_CEI_ReservesUpdatedBeforeCallback()
 | Rebasing 防御 | ❌ | 余额快照 |
 | CEI 模式 | ❌ (swap 违反) | ✅ |
 | 交易过期保护 | ❌ | deadline 参数 |
-| Oracle 操纵警告 | ❌ | NatSpec |
+| TWAP Oracle | ❌ | 累积价格 + 双槽环形缓冲区 |
 
 ---
 
 ## 测试结果
 
 ```
-PoolV2 Regression:  12 passed, 0 failed ✅
+PoolV2 Regression:  17 passed, 0 failed ✅
 Pool (original):    49 passed, 0 failed ✅
-Total:              61 passed, 0 failed ✅
+All suites:         122 passed, 0 failed ✅
 ```
 
 | 测试套件 | 文件 | 测试数 |
 |----------|------|:--:|
 | Pool 单元测试 (V1) | `test/Pool.t.sol` | 49 |
-| PoolV2 回归测试 | `test/PoolV2.t.sol` | 12 |
-| **总计** | | **61** |
+| PoolV2 回归测试 | `test/PoolV2.t.sol` | 17 |
+| Attack PoC 测试 | `test/AttackPoC.t.sol` | 5 |
+| Reentrancy PoC | `test/ReentrancyPoC.t.sol` | 6 |
+| Flashloan PoC | `test/FlashloanSandwichPoC.t.sol` | 7 |
+| SimpleToken 测试 | `test/SimpleToken.t.sol` | 32 |
+| Counter 测试 | `test/Counter.t.sol` | 6 |
+| **总计** | | **122** |
 
 ---
 
