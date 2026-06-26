@@ -134,6 +134,83 @@ function test_Revert_Swap_ZeroOutput() public {
 }
 ```
 
+### 7. Block & Time Manipulation — All time-dependent logic
+
+**When to use (MANDATORY for time-dependent features):**
+
+| Feature | Trigger | Technique |
+|---------|---------|-----------|
+| Deadline / Expiry | `block.timestamp` comparison | `vm.warp(ts)` |
+| TWAP / Oracle | Cumulative price × time | `vm.warp(ts)` + `vm.roll(n)` |
+| Vesting / Lockup | `block.timestamp` or `block.number` | `vm.warp` / `vm.roll` |
+| MEV sandwich simulation | Multi-block attack | `vm.roll` + `vm.warp` |
+| Stale transaction | Expired deadline after N blocks | `vm.roll(n)` + `vm.warp(ts)` |
+
+**`vm.warp` — 修改 `block.timestamp`**:
+```solidity
+/// @dev Deadline: 时间已过期 → revert
+function test_Revert_Deadline_Expired() public {
+    vm.warp(1000); // 设置区块时间为 1000
+    vm.prank(alice);
+    vm.expectRevert("Expired");
+    pool.swap(address(tokenA), 10 * 1e18, 0, 999); // deadline=999 < 1000
+}
+
+/// @dev TWAP: swap 后累积价格随 timeElapsed 递增
+function test_TWAP_CumulativePrice() public {
+    vm.warp(block.timestamp + 100); // 时间前进 100s
+    vm.prank(alice);
+    pool.swap(address(tokenA), 10 * 1e18, 0, 0);
+    // oracle 累积了 100s × 当前价格
+    (uint256 cumA, , , , ) = pool.getOracleState();
+    assertGt(cumA, 0, "cumulative price > 0 after 100s elapsed");
+}
+```
+
+**`vm.roll` — 修改 `block.number`**:
+```solidity
+/// @dev 仅推进区块号，时间不变 → oracle 不累积（依赖 timeElapsed）
+function test_RollOnly_NoTimeElapsed() public {
+    vm.warp(100);
+    vm.prank(alice);
+    pool.swap(address(tokenA), 10 * 1e18, 0, 0);
+    (uint256 cumA1, , , , ) = pool.getOracleState();
+
+    vm.roll(block.number + 100); // 仅推进区块高度，时间不变
+    vm.prank(alice);
+    pool.swap(address(tokenA), 10 * 1e18, 0, 0);
+    (uint256 cumA2, , , , ) = pool.getOracleState();
+    assertEq(cumA2, cumA1, "no accumulation when timestamp unchanged");
+}
+```
+
+**`vm.warp` + `vm.roll` 组合 — 模拟真实多区块场景**:
+```solidity
+/// @dev 模拟 Ethereum 出块：每个区块 12s
+function test_MultiBlock_TWAP_Accumulates() public {
+    for (uint256 i = 0; i < 5; i++) {
+        vm.roll(block.number + 1);      // 新区块
+        vm.warp(block.timestamp + 12);  // 12s 间隔
+        vm.prank(alice);
+        pool.swap(address(tokenA), 1 * 1e18, 0, 0);
+    }
+    uint256 twap = pool.getTwapA(12);
+    assertGt(twap, 0, "TWAP accumulated across 5 blocks");
+}
+```
+
+**Rules**:
+- `vm.warp(0)` is invalid — Foundry rejects timestamp 0
+- `vm.warp` does NOT automatically advance `block.number` — use both for realism
+- After `vm.warp`, `block.timestamp` persists through subsequent calls in the same test
+- `vm.roll` sets `block.number` to the EXACT value, not an increment — use `block.number + N`
+- For TWAP ring buffers with N slots, ensure at least N+1 cross-block swaps to fill history
+
+**When NOT to use**:
+- Pure token tests (ERC20 transfer/approve don't depend on time)
+- Static invariant tests (K constant, balance == reserve)
+- Access control tests (onlyOwner unaffected by block time)
+
 ---
 
 ## Coding Standards (NON-NEGOTIABLE)
@@ -145,6 +222,9 @@ function test_Revert_Swap_ZeroOutput() public {
 □ vm.prank for ALL address-impersonating calls
 □ vm.expectRevert() BEFORE the function that should revert
 □ vm.expectEmit BEFORE the function call
+□ vm.warp BEFORE the time-dependent call (deadline, TWAP, vesting)
+□ vm.roll(block.number + N) for multi-block scenarios — always use relative increment
+□ vm.warp + vm.roll together when simulating realistic chain (block + 12s)
 □ assertEq(actual, expected, "message")
 □ No magic numbers — use named constants or derive from setup
 □ setUp() has zero assertions
@@ -167,6 +247,10 @@ function test_Revert_Swap_ZeroOutput() public {
 8. ❌ `bound(amount, 0, max)` and swap without approve → ✅ approve in setup or prank
 9. ❌ Using `address(tokenA)` for a pool2's own tokens → ✅ use `address(pool2.tokenA())`
 10. ❌ Mock ERC20 `transfer` marked `view` → ✅ it must actually transfer tokens
+11. ❌ `vm.warp(0)` — Foundry rejects timestamp 0 → ✅ use `vm.warp(1)` or higher
+12. ❌ `vm.warp` but forgot `vm.roll` for multi-block realism → ✅ use both
+13. ❌ Hardcoded `vm.roll(100)` instead of `vm.roll(block.number + N)` → ✅ relative increment
+14. ❌ Expecting TWAP with insufficient ring buffer history → ✅ check window >= period
 
 ---
 
