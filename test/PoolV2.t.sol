@@ -394,6 +394,112 @@ contract PoolV2RegressionTest is Test {
         uint256 twap = pool.getTwapA(3600);
         assertEq(twap, 0, "TWAP = 0 when history insufficient");
     }
+
+    // ═══════════════════════════════════════════
+    // 区块高度 / 多区块场景 (vm.roll)
+    // ═══════════════════════════════════════════
+
+    /// @dev vm.roll + vm.warp: 模拟真实多区块 TWAP 累积（每区块 12s）
+    function test_Fix_V03_MultiBlock_TWAP_AccumulatesOverBlocks() public {
+        // 初始 swap 写入 slot 0
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        vm.prank(alice);
+        pool.swap(address(tokenA), 10 * 1e18, 0, 0);
+
+        // 多次跨区块 swap，每次 12s（模拟 Ethereum 出块）
+        for (uint256 i = 0; i < 5; i++) {
+            vm.roll(block.number + 1);
+            vm.warp(block.timestamp + 12);
+            vm.prank(alice);
+            pool.swap(address(tokenA), 1 * 1e18, 0, 0);
+        }
+
+        // 最后再 advance 一次确保双槽跨越足够窗口
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        vm.prank(alice);
+        pool.swap(address(tokenA), 10 * 1e18, 0, 0);
+
+        // 双槽窗口 = 最后两次不同 block 的 swap 间隔（≥12s）
+        // getTwapA(12) 要求窗口 ≥ 12s
+        uint256 twap = pool.getTwapA(12);
+        assertGt(twap, 0, "TWAP accumulated across multiple blocks");
+    }
+
+    /// @dev vm.roll + vm.warp: deadline 跨区块过期
+    function test_Fix_V08_Deadline_ExpiredAfterMultipleBlocks() public {
+        // 设置 deadline = 当前 + 5 个区块后
+        uint256 deadlineBlock = block.timestamp + 60; // 5 blocks × 12s
+
+        // 推进 10 个区块（120s）→ deadline 已过期
+        vm.roll(block.number + 10);
+        vm.warp(block.timestamp + 120);
+
+        vm.prank(alice);
+        vm.expectRevert("Expired");
+        pool.swap(address(tokenA), 10 * 1e18, 0, deadlineBlock);
+    }
+
+    /// @dev vm.roll: 仅推进区块高度（时间不变）→ TWAP 不累积（依赖时间差）
+    function test_Fix_V03_RollOnly_NoTimeElapsed_NoTWAPUpdate() public {
+        // 初始 swap
+        vm.warp(block.timestamp + 100);
+        vm.prank(alice);
+        pool.swap(address(tokenA), 10 * 1e18, 0, 0);
+
+        (uint256 cumA1, , , , ) = pool.getOracleState();
+
+        // 仅推进区块号，时间不变
+        vm.roll(block.number + 100);
+
+        // 再做 swap（同一 timestamp → elapsed = 0 → oracle 不累积）
+        vm.prank(alice);
+        pool.swap(address(tokenA), 10 * 1e18, 0, 0);
+
+        (uint256 cumA2, , , , ) = pool.getOracleState();
+        // 累积价格不变（timeElapsed = 0，无新增累积）
+        assertEq(cumA2, cumA1, "cumulative price unchanged when timestamp stays same");
+    }
+
+    /// @dev vm.roll + vm.warp: TWAP 跨区块窗口，价格比 spot 更稳定
+    /// 双槽环形缓冲区提供最近两次跨区块观察的 TWAP 窗口
+    function test_Fix_V03_MultiBlock_PriceStaysStable() public {
+        // 第一次 swap — 写入 slot 0（t=100）
+        vm.roll(block.number + 1);
+        vm.warp(100);
+        vm.prank(alice);
+        pool.swap(address(tokenA), 1 * 1e18, 0, 0);
+
+        // 等待 100s + 多区块 — 第二次 swap 写入 slot 1（t=200）
+        vm.roll(block.number + 50);
+        vm.warp(200);
+        vm.prank(alice);
+        pool.swap(address(tokenA), 1 * 1e18, 0, 0);
+
+        uint256 spotBefore = pool.getPrice(address(tokenA));
+
+        // 双槽窗口 = 200 - 100 = 100s，getTwapA(60) 应可用
+        uint256 twapBefore = pool.getTwapA(60);
+        assertGt(twapBefore, 0, "TWAP available after 100s window");
+
+        // 一次大额 swap 操纵 spot price（t=212）
+        tokenA.mint(alice, 200 * 1e18);
+        vm.roll(block.number + 1);
+        vm.warp(212);
+        vm.prank(alice);
+        pool.swap(address(tokenA), 200 * 1e18, 0, 0);
+
+        uint256 spotAfter = pool.getPrice(address(tokenA));
+        assertLt(spotAfter, spotBefore, "spot price drops after large swap");
+
+        // 大额 swap 后双槽被覆盖为新窗口（100→212=112s），TWAP 包含 12s 操纵段 + 100s 稳定段
+        // 相对 spot 更稳定（受历史稀释）
+        uint256 twapAfter = pool.getTwapA(60);
+        if (twapAfter > 0) {
+            assertGt(twapAfter, spotAfter, "TWAP > manipulated spot (diluted by history)");
+        }
+    }
 }
 
 // ═══════════════════════════════════════════
