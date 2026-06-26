@@ -19,3 +19,10 @@ docs/
 .env.*
 !.env.example
 .DS_Store
+
+# Coverage
+lcov.info
+
+# External sub-projects
+reconciliation-tests/
+sql/
